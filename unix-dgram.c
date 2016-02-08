@@ -115,7 +115,7 @@ int new_unix_socket(const char *path, unsigned *err) {
 	*err = 0;
 	
 	// Create UNIX socket
-	fd = socket(PF_UNIX, SOCK_DGRAM, 0);
+	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
 	if (fd == -1) goto Error;
 
 	// Initialise our address structure
