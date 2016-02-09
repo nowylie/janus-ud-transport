@@ -190,6 +190,11 @@ void *recv_thread(void *data) {
 		// get a pointer to the cached version of this address
 		struct sockaddr_un *uaddr, *caddr;
 		uaddr = (struct sockaddr_un *)&addr;
+		if (uaddr->sun_path[0] == '\0') {
+			JANUS_LOG(LOG_WARN, "dropping request from anonymous socket\n");
+			continue;
+		}
+
 		caddr = g_hash_table_lookup(addr_cache, uaddr->sun_path);
 		if (!caddr) { // if this address isn't cached, cache it
 			caddr = malloc(sizeof(struct sockaddr_un));
