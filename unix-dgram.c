@@ -7,9 +7,20 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "janus/transport.h"
 #include "janus/config.h"
 #include "janus/debug.h"
+
+/**
+ * FIXME
+ *
+ * Currently using poll() with a single(?) thread to recv, and sending from any thread.
+ * Should probably transition this to using libuv or something to make things a bit
+ * simpler/safer...
+ *
+ **/
+
 
 /* Constraints */
 #define BMAX 8192	// Max buffer
@@ -209,6 +220,15 @@ void *recv_thread(void *data) {
 		json_t *msg = json_loadb(b.data, b.length, JSON_DISABLE_EOF_CHECK, &err);
 		if (msg == NULL) { // an error occured
 			JANUS_LOG(LOG_ERR, "json_loadb: %s\n", err.text);
+			continue;
+		}
+
+		const gchar *method = json_string_value(json_object_get(msg, "janus"));
+		if (!strcasecmp(method, "ping")) {
+			json_t *reply = json_object();
+			json_object_set_new(reply, "janus", json_string("pong"));
+			json_object_set(reply, "transaction", json_object_get(msg, "transaction"));
+			janus_ud_send_message(caddr, NULL, admin, reply);
 			continue;
 		}
 		
