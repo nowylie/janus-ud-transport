@@ -223,12 +223,24 @@ void *recv_thread(void *data) {
 			continue;
 		}
 
+		// what kind of request is this?
 		const gchar *method = json_string_value(json_object_get(msg, "janus"));
+		
+		if (!strcasecmp(method, "info")) {
+			json_t *reply = gateway->janus_info(json_string_value(json_object_get(msg, "transaction")));
+			janus_ud_send_message(caddr, NULL, admin, reply);
+			json_decref(reply);
+			json_decref(msg);
+			continue;
+		}
+
 		if (!strcasecmp(method, "ping")) {
 			json_t *reply = json_object();
 			json_object_set_new(reply, "janus", json_string("pong"));
 			json_object_set(reply, "transaction", json_object_get(msg, "transaction"));
 			janus_ud_send_message(caddr, NULL, admin, reply);
+			json_decref(reply);
+			json_decref(msg);
 			continue;
 		}
 		
