@@ -11,6 +11,7 @@
 #include "janus/transport.h"
 #include "janus/config.h"
 #include "janus/debug.h"
+#include "janus/apierror.h"
 
 /**
  * FIXME
@@ -21,6 +22,25 @@
  *
  **/
 
+json_t *error_reply(json_t *request, gint error) {
+	json_t *reply = json_object();
+	json_object_set_new(reply, "janus", json_string("error"));
+
+	// add session_id field
+	 json_t *session_id = json_object_get(request, "session_id");
+	 if (session_id != NULL && json_is_integer(session_id)) json_object_set(reply, "session_id", session_id);
+
+	 // add transaction field
+	 json_t *transaction = json_object_get(request, "transaction");
+	 if (transaction != NULL && json_is_string(transaction)) json_object_set(reply, "transaction", transaction);
+
+	 json_t *error_data = json_object();
+	 json_object_set_new(error_data, "code", json_integer(error));
+	 json_object_set_new(error_data, "reason", json_string(janus_get_api_error(error)));
+	 json_object_set_new(reply, "error", error_data);
+
+	 return reply;
+}
 
 /* Constraints */
 #define BMAX 8192	// Max buffer
@@ -221,6 +241,30 @@ void *recv_thread(void *data) {
 		if (msg == NULL) { // an error occured
 			JANUS_LOG(LOG_ERR, "[%s] json_loadb: %s\n", JANUS_UD_PACKAGE, err.text);
 			continue;
+		}
+
+		// check secret
+		if (gateway->is_api_secret_needed(&ud_plugin)) {
+			json_t *secret = json_object_get(msg, "apisecret");
+			if (secret == NULL || !json_is_string(secret) || !gateway->is_api_secret_valid(&ud_plugin, json_string_value(secret))) {
+				json_t *reply = error_reply(msg, JANUS_ERROR_UNAUTHORIZED);
+				janus_ud_send_message(caddr, NULL, admin, reply);
+				json_decref(reply);
+				json_decref(msg);
+				continue;
+			}
+		}
+
+		// check token
+		if (gateway->is_auth_token_needed(&ud_plugin)) {
+			json_t *token = json_object_get(msg, "token");
+			if (token == NULL || !json_is_string(token) || !gateway->is_auth_token_valid(&ud_plugin, json_string_value(token))) {
+				json_t *reply = error_reply(msg, JANUS_ERROR_UNAUTHORIZED);
+				janus_ud_send_message(caddr, NULL, admin, reply);
+				json_decref(reply);
+				json_decref(msg);
+				continue;
+			}
 		}
 
 		// what kind of request is this?
