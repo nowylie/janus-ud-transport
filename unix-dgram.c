@@ -244,7 +244,8 @@ void *recv_thread(void *data) {
 		}
 
 		// check secret
-		if (gateway->is_api_secret_needed(&ud_plugin)) {
+		gboolean authorized = FALSE;
+		if (!authorized && gateway->is_api_secret_needed(&ud_plugin)) {
 			json_t *secret = json_object_get(msg, "apisecret");
 			if (secret == NULL || !json_is_string(secret) || !gateway->is_api_secret_valid(&ud_plugin, json_string_value(secret))) {
 				json_t *reply = error_reply(msg, JANUS_ERROR_UNAUTHORIZED);
@@ -253,10 +254,11 @@ void *recv_thread(void *data) {
 				json_decref(msg);
 				continue;
 			}
+			authorized = TRUE;
 		}
 
 		// check token
-		if (gateway->is_auth_token_needed(&ud_plugin)) {
+		if (!authorized && gateway->is_auth_token_needed(&ud_plugin)) {
 			json_t *token = json_object_get(msg, "token");
 			if (token == NULL || !json_is_string(token) || !gateway->is_auth_token_valid(&ud_plugin, json_string_value(token))) {
 				json_t *reply = error_reply(msg, JANUS_ERROR_UNAUTHORIZED);
@@ -265,6 +267,7 @@ void *recv_thread(void *data) {
 				json_decref(msg);
 				continue;
 			}
+			authorized = TRUE;
 		}
 
 		// what kind of request is this?
