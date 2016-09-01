@@ -606,5 +606,21 @@ json_t *process_handle_request(json_t *request, const char *method, const char *
 		return reply;
 	}
 
+	if (!strcasecmp(method, "hangup")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'hangup' request\n", JANUS_UD_PACKAGE);
+		int err = gateway->hangup_handle(session_id, handle_id);
+		if (err != 0) {
+			JANUS_LOG(LOG_ERR, "[%s] Error hanging up handle: %s (%d)\n", JANUS_UD_PACKAGE, janus_get_api_error(err), err);
+			return error_reply(json_string(transaction), json_integer(session_id), json_integer(handle_id), err);
+		}
+
+		json_t *reply = json_object();
+		json_object_set_new(reply, "janus", json_string("success"));
+		json_object_set_new(reply, "session_id", json_integer(session_id));
+		json_object_set_new(reply, "handle_id", json_integer(handle_id)); // FIXME is handle_id the correct key to use here?
+		json_object_set_new(reply, "transaction", json_string(transaction));
+		return reply;
+	}
+
 	return NULL;
 }
