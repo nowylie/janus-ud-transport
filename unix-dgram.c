@@ -22,25 +22,11 @@
  *
  **/
 
-json_t *error_reply(json_t *request, gint error) {
-	json_t *reply = json_object();
-	json_object_set_new(reply, "janus", json_string("error"));
-
-	// add session_id field
-	 json_t *session_id = json_object_get(request, "session_id");
-	 if (session_id != NULL && json_is_integer(session_id)) json_object_set(reply, "session_id", session_id);
-
-	 // add transaction field
-	 json_t *transaction = json_object_get(request, "transaction");
-	 if (transaction != NULL && json_is_string(transaction)) json_object_set(reply, "transaction", transaction);
-
-	 json_t *error_data = json_object();
-	 json_object_set_new(error_data, "code", json_integer(error));
-	 json_object_set_new(error_data, "reason", json_string(janus_get_api_error(error)));
-	 json_object_set_new(reply, "error", error_data);
-
-	 return reply;
-}
+/* Forward declaration of request handling functions */
+json_t *error_reply(json_t *transaction, json_t *session_id, json_t *handle_id, gint error);
+json_t *process_gateway_request(struct sockaddr_un *caddr, json_t *request, const char *method, const char *transaction);
+json_t *process_session_request(json_t *request, const char *method, const char *transaction, json_int_t session_id);
+json_t *process_handle_request(json_t *request, const char *method, const char *transaction, json_int_t session_id, json_int_t handle_id);
 
 /* Constraints */
 #define BMAX 8192	// Max buffer
@@ -237,63 +223,79 @@ void *recv_thread(void *data) {
 		
 		// decode the message
 		json_error_t err;
-		json_t *msg = json_loadb(b.data, b.length, JSON_DISABLE_EOF_CHECK, &err);
+		json_t *reply = NULL, *msg = json_loadb(b.data, b.length, JSON_DISABLE_EOF_CHECK, &err);
 		if (msg == NULL) { // an error occured
 			JANUS_LOG(LOG_ERR, "[%s] json_loadb: %s\n", JANUS_UD_PACKAGE, err.text);
-			continue;
+			reply = error_reply(NULL, NULL, NULL, JANUS_ERROR_INVALID_JSON);
+			goto SEND_REPLY;
 		}
+
+		json_t *method, *transaction, *session_id, *handle_id;
+		method = json_object_get(msg, "janus");
+		transaction = json_object_get(msg, "transaction");
+		session_id = json_object_get(msg, "session_id");
+		handle_id = json_object_get(msg, "handle_id");
 
 		// check secret
 		gboolean authorized = FALSE;
 		if (!authorized && gateway->is_api_secret_needed(&ud_plugin)) {
+			JANUS_LOG(LOG_HUGE, "[%s] checking API secret\n", JANUS_UD_PACKAGE);
 			json_t *secret = json_object_get(msg, "apisecret");
 			if (secret == NULL || !json_is_string(secret) || !gateway->is_api_secret_valid(&ud_plugin, json_string_value(secret))) {
-				json_t *reply = error_reply(msg, JANUS_ERROR_UNAUTHORIZED);
-				janus_ud_send_message(caddr, NULL, admin, reply);
-				json_decref(reply);
-				json_decref(msg);
-				continue;
+				JANUS_LOG(LOG_ERR, "[%s] Unable to process request, API secret missing or invalid.\n", JANUS_UD_PACKAGE);
+				reply = error_reply(transaction, session_id, handle_id, JANUS_ERROR_UNAUTHORIZED);
+				goto SEND_REPLY;
 			}
+			JANUS_LOG(LOG_HUGE, "[%s] API secret valid\n", JANUS_UD_PACKAGE);
 			authorized = TRUE;
 		}
 
 		// check token
 		if (!authorized && gateway->is_auth_token_needed(&ud_plugin)) {
+			JANUS_LOG(LOG_HUGE, "[%s] checking token\n", JANUS_UD_PACKAGE);
 			json_t *token = json_object_get(msg, "token");
 			if (token == NULL || !json_is_string(token) || !gateway->is_auth_token_valid(&ud_plugin, json_string_value(token))) {
-				json_t *reply = error_reply(msg, JANUS_ERROR_UNAUTHORIZED);
-				janus_ud_send_message(caddr, NULL, admin, reply);
-				json_decref(reply);
-				json_decref(msg);
-				continue;
+				JANUS_LOG(LOG_ERR, "[%s] Unable to process request, token missing or invalid.\n", JANUS_UD_PACKAGE);
+				reply = error_reply(transaction, session_id, handle_id, JANUS_ERROR_UNAUTHORIZED);
+				goto SEND_REPLY;
 			}
+			JANUS_LOG(LOG_HUGE, "[%s] token valid\n", JANUS_UD_PACKAGE);
 			authorized = TRUE;
 		}
 
-		// what kind of request is this?
-		const gchar *method = json_string_value(json_object_get(msg, "janus"));
-		JANUS_LOG(LOG_VERB, "[%s] Received '%s' request\n", JANUS_UD_PACKAGE, method);
-		
-		if (!strcasecmp(method, "info")) {
-			json_t *reply = gateway->janus_info(json_string_value(json_object_get(msg, "transaction")));
-			janus_ud_send_message(caddr, NULL, admin, reply);
-			json_decref(reply);
-			json_decref(msg);
-			continue;
+		// check for 'janus' and 'transaction' fields
+		if (method == NULL || !json_is_string(method) || transaction == NULL || !json_is_string(transaction)) {
+			JANUS_LOG(LOG_ERR, "[%s] Error, request missing 'janus' or 'transaction' field.\n", JANUS_UD_PACKAGE);
+			reply = error_reply(transaction, session_id, handle_id, JANUS_ERROR_MISSING_MANDATORY_ELEMENT);
+			goto SEND_REPLY;
 		}
 
-		if (!strcasecmp(method, "ping")) {
-			json_t *reply = json_object();
-			json_object_set_new(reply, "janus", json_string("pong"));
-			json_object_set(reply, "transaction", json_object_get(msg, "transaction"));
-			janus_ud_send_message(caddr, NULL, admin, reply);
-			json_decref(reply);
-			json_decref(msg);
-			continue;
+		// pass request to appropriate function
+		if (session_id != NULL && json_is_integer(session_id)) {
+			// since we have a session_id, we can update the session activity (keepalive)
+			gateway->update_session_activity(json_integer_value(session_id));
+			if (handle_id != NULL && json_is_integer(handle_id)) {
+				// Handle level request
+				reply = process_handle_request(msg, json_string_value(method), json_string_value(transaction), json_integer_value(session_id), json_integer_value(handle_id));
+			} else {
+				// Session level request
+				reply = process_session_request(msg, json_string_value(method), json_string_value(transaction), json_integer_value(session_id));
+			}
+		} else {
+			// Gateway level request
+			reply = process_gateway_request(caddr, msg, json_string_value(method), json_string_value(transaction));
+		}
+
+		if (reply == NULL) {
+			JANUS_LOG(LOG_ERR, "[%s] Error, unknown request '%s'\n", JANUS_UD_PACKAGE, json_string_value(method));
+			reply = error_reply(transaction, session_id, handle_id, JANUS_ERROR_UNKNOWN_REQUEST);
 		}
 		
-		// pass *msg to the gateway
-		gateway->incoming_request(&ud_plugin, caddr, NULL, admin, msg, NULL);
+		SEND_REPLY:
+		JANUS_LOG(LOG_HUGE, "[%s] sending '%s' reply\n", JANUS_UD_PACKAGE, json_string_value(json_object_get(reply, "janus")));
+		janus_ud_send_message(caddr, NULL, admin, reply);
+		json_decref(reply);
+		json_decref(msg);
 	}
 	
 	pthread_mutex_lock(&thread_lock);
@@ -469,7 +471,73 @@ int janus_ud_send_message(void *addr, void *rid, gboolean admin, json_t *msg) {
 }
 
 void janus_ud_session_created(void *addr, guint64 session) {
+	JANUS_LOG(LOG_INFO, "[%s] session created %lu\n", JANUS_UD_PACKAGE, session);
 }
 
 void janus_ud_session_over(void *addr, guint64 session, gboolean timeout) {
+}
+
+json_t *error_reply(json_t *transaction, json_t *session_id, json_t *handle_id, gint error) {
+	json_t *reply = json_object();
+	json_object_set_new(reply, "janus", json_string("error"));
+
+	 if (transaction != NULL && json_is_string(transaction)) json_object_set(reply, "transaction", transaction);
+	 if (session_id != NULL && json_is_integer(session_id)) json_object_set(reply, "session_id", session_id);
+	 if (session_id != NULL && json_is_integer(handle_id)) json_object_set(reply, "handle_id", handle_id);
+
+	 json_t *error_data = json_object();
+	 json_object_set_new(error_data, "code", json_integer(error));
+	 json_object_set_new(error_data, "reason", json_string(janus_get_api_error(error)));
+	 json_object_set_new(reply, "error", error_data);
+
+	 return reply;
+}
+
+json_t *process_gateway_request(struct sockaddr_un *caddr, json_t *request, const char *method, const char *transaction) {
+	if (!strcasecmp(method, "info")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'info' request\n", JANUS_UD_PACKAGE);
+		return gateway->janus_info(transaction);
+	}
+
+	if (!strcasecmp(method, "ping")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'ping' request\n", JANUS_UD_PACKAGE);
+		json_t *reply = json_object();
+		json_object_set_new(reply, "janus", json_string("pong"));
+		json_object_set_new(reply, "transaction", json_string(transaction));
+		return reply;
+	}
+
+	if (!strcasecmp(method, "create")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'create' request\n", JANUS_UD_PACKAGE);
+		guint64 session_id = 0;
+		json_t *id = json_object_get(request, "id");
+		if (id != NULL && json_is_integer(id)) {
+			session_id = json_integer_value(id);
+		}
+
+		int err = 0;
+		session_id = gateway->create_session(&ud_plugin, caddr, session_id, &err);
+		if (err) {
+			JANUS_LOG(LOG_ERR, "[%s] error creating session: %s (%d)\n", JANUS_UD_PACKAGE, janus_get_api_error(err), err);
+			return error_reply(json_string(transaction), NULL, NULL, err);
+		}
+		
+		json_t *reply = json_object();
+		json_object_set_new(reply, "janus", json_string("success"));
+		json_object_set_new(reply, "transaction", json_string(transaction));
+		json_t *data = json_object();
+		json_object_set_new(data, "id", json_integer(session_id));
+		json_object_set_new(reply, "data", data);
+		return reply;
+	}
+
+	return NULL;
+}
+
+json_t *process_session_request(json_t *request, const char *method, const char *transaction, json_int_t session_id) {
+	return NULL;
+}
+
+json_t *process_handle_request(json_t *request, const char *method, const char *transaction, json_int_t session_id, json_int_t handle_id) {
+	return NULL;
 }
