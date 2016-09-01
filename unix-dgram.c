@@ -25,8 +25,8 @@
 /* Forward declaration of request handling functions */
 json_t *error_reply(json_t *transaction, json_t *session_id, json_t *handle_id, gint error);
 json_t *process_gateway_request(struct sockaddr_un *caddr, json_t *request, const char *method, const char *transaction);
-json_t *process_session_request(json_t *request, const char *method, const char *transaction, json_int_t session_id);
-json_t *process_handle_request(json_t *request, const char *method, const char *transaction, json_int_t session_id, json_int_t handle_id);
+json_t *process_session_request(json_t *request, const char *method, const char *transaction, guint64 session_id);
+json_t *process_handle_request(json_t *request, const char *method, const char *transaction, guint64 session_id, guint64 handle_id);
 
 /* Constraints */
 #define BMAX 8192	// Max buffer
@@ -534,10 +534,38 @@ json_t *process_gateway_request(struct sockaddr_un *caddr, json_t *request, cons
 	return NULL;
 }
 
-json_t *process_session_request(json_t *request, const char *method, const char *transaction, json_int_t session_id) {
+json_t *process_session_request(json_t *request, const char *method, const char *transaction, guint64 session_id) {
+	if (!strcasecmp(method, "keepalive")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'keepalive' request\n", JANUS_UD_PACKAGE);
+		json_t *reply = json_object();
+		json_object_set_new(reply, "janus", json_string("ack"));
+		json_object_set_new(reply, "session_id", json_integer(session_id));
+		json_object_set_new(reply, "transaction", json_string(transaction));
+		return reply;
+	}
+
+	if (!strcasecmp(method, "attach")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'attach' request\n", JANUS_UD_PACKAGE);
+	}
+
+	if (!strcasecmp(method, "destroy")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'destroy' request\n", JANUS_UD_PACKAGE);
+		int err = gateway->destroy_session(session_id);
+		if (err) {
+			JANUS_LOG(LOG_ERR, "[%s] Error destroying session: %s (%d)\n", JANUS_UD_PACKAGE, janus_get_api_error(err), err);
+			return error_reply(json_string(transaction), json_integer(session_id), NULL, err);
+		}
+		
+		json_t *reply = json_object();
+		json_object_set_new(reply, "janus", json_string("success"));
+		json_object_set_new(reply, "session_id", json_integer(session_id));
+		json_object_set_new(reply, "transaction", json_string(transaction));
+		return reply;
+	}
+
 	return NULL;
 }
 
-json_t *process_handle_request(json_t *request, const char *method, const char *transaction, json_int_t session_id, json_int_t handle_id) {
+json_t *process_handle_request(json_t *request, const char *method, const char *transaction, guint64 session_id, guint64 handle_id) {
 	return NULL;
 }
