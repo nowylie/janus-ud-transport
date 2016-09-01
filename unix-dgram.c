@@ -544,10 +544,6 @@ json_t *process_session_request(json_t *request, const char *method, const char 
 		return reply;
 	}
 
-	if (!strcasecmp(method, "attach")) {
-		JANUS_LOG(LOG_HUGE, "[%s] handling 'attach' request\n", JANUS_UD_PACKAGE);
-	}
-
 	if (!strcasecmp(method, "destroy")) {
 		JANUS_LOG(LOG_HUGE, "[%s] handling 'destroy' request\n", JANUS_UD_PACKAGE);
 		int err = gateway->destroy_session(session_id);
@@ -560,6 +556,33 @@ json_t *process_session_request(json_t *request, const char *method, const char 
 		json_object_set_new(reply, "janus", json_string("success"));
 		json_object_set_new(reply, "session_id", json_integer(session_id));
 		json_object_set_new(reply, "transaction", json_string(transaction));
+		return reply;
+	}
+
+	if (!strcasecmp(method, "attach")) {
+		JANUS_LOG(LOG_HUGE, "[%s] handling 'attach' request\n", JANUS_UD_PACKAGE);
+		json_t *plugin_package = json_object_get(request, "plugin");
+		if (plugin_package == NULL || !json_is_string(plugin_package)) {
+			JANUS_LOG(LOG_ERR, "[%s] Error attach session to plugin, plugin package name not provided\n", JANUS_UD_PACKAGE);
+			return error_reply(json_string(transaction), json_integer(session_id), NULL, JANUS_ERROR_MISSING_MANDATORY_ELEMENT);
+		}
+
+		// FIXME seems a bit odd to grab the token again, maybe pass it from outside this function?
+		json_t *token = json_object_get(request, "token");
+		int err = 0;
+		guint64 handle_id = gateway->attach_handle(session_id, json_string_value(plugin_package), json_string_value(token), &err);
+		if (handle_id == 0) {
+			JANUS_LOG(LOG_ERR, "[%s] Error attach session to plugin: %s (%d)\n", JANUS_UD_PACKAGE, janus_get_api_error(err), err);
+			return error_reply(json_string(transaction), json_integer(session_id), NULL, err);
+		}
+
+		json_t *reply = json_object();
+		json_object_set_new(reply, "janus", json_string("success"));
+		json_object_set_new(reply, "session_id", json_integer(session_id));
+		json_object_set_new(reply, "transaction", json_string(transaction));
+		json_t *data = json_object();
+		json_object_set_new(data, "id", json_integer(handle_id));
+		json_object_set_new(reply, "data", data);
 		return reply;
 	}
 
